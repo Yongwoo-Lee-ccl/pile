@@ -9,9 +9,20 @@ import { Viewer, Worker, SpecialZoomLevel } from '@react-pdf-viewer/core';
 import { SelectionMode, selectionModePlugin } from '@react-pdf-viewer/selection-mode';
 
 import {
-    AppBar, Toolbar, IconButton, Typography, CssBaseline, Button, ButtonGroup, Tooltip, Box
+    AppBar,
+    Toolbar,
+    IconButton,
+    Typography,
+    CssBaseline,
+    Button,
+    ButtonGroup,
+    Tooltip,
+    Box,
+    Paper,
+    TextField,
+    Stack,
 } from '@mui/material';
-import { ArrowBack, Save, BorderColor, FormatUnderlined, PanTool } from '@mui/icons-material';
+import { ArrowBack, Save, BorderColor, FormatUnderlined, PanTool, StickyNote2 } from '@mui/icons-material';
 
 const API_URL = 'http://localhost:3001';
 
@@ -24,6 +35,7 @@ interface Annotation {
     type: 'highlight' | 'underline';
     pageIndex: number;
     rects: Rect[];
+    note?: string;
 }
 interface PDF {
     id:string;
@@ -42,6 +54,10 @@ export function PdfViewPage() {
     const [message, setMessage] = useState('');
     const handSelectionHandlerRef = useRef<(() => void) | null>(null);
     const textSelectionHandlerRef = useRef<(() => void) | null>(null);
+    const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
+    const [noteDraft, setNoteDraft] = useState('');
+    const [popupPosition, setPopupPosition] = useState<{ x: number; y: number } | null>(null);
+    const popupRef = useRef<HTMLDivElement | null>(null);
 
     // --- 데이터 로딩 ---
     useEffect(() => {
@@ -150,12 +166,62 @@ export function PdfViewPage() {
             ...prev,
             annotations: [...prev.annotations, ...newAnnotations],
         })));
+
+        // Return to hand mode so highlights are immediately clickable
+        setAnnotationMode('none');
     }, [annotationMode]);
+
+    const openAnnotationPopup = useCallback(
+        (annotationId: string, anchorRect: DOMRect) => {
+            const annotation = currentPdf?.annotations.find((a) => a.id === annotationId);
+            setActiveAnnotationId(annotationId);
+            setNoteDraft(annotation?.note ?? '');
+            setPopupPosition({ x: anchorRect.left + anchorRect.width / 2, y: anchorRect.bottom + 8 });
+        },
+        [currentPdf]
+    );
+
+    const closeAnnotationPopup = useCallback(() => {
+        setActiveAnnotationId(null);
+        setPopupPosition(null);
+        setNoteDraft('');
+    }, []);
+
+    const handleSaveNote = useCallback(() => {
+        if (!currentPdf || !activeAnnotationId) return;
+        setCurrentPdf({
+            ...currentPdf,
+            annotations: currentPdf.annotations.map((annotation) =>
+                annotation.id === activeAnnotationId ? { ...annotation, note: noteDraft.trim() || undefined } : annotation
+            ),
+        });
+        closeAnnotationPopup();
+    }, [activeAnnotationId, closeAnnotationPopup, currentPdf, noteDraft]);
+
+    const handleDeleteAnnotation = useCallback(() => {
+        if (!currentPdf || !activeAnnotationId) return;
+        setCurrentPdf({
+            ...currentPdf,
+            annotations: currentPdf.annotations.filter((annotation) => annotation.id !== activeAnnotationId),
+        });
+        closeAnnotationPopup();
+    }, [activeAnnotationId, closeAnnotationPopup, currentPdf]);
+
+    useEffect(() => {
+        if (!activeAnnotationId) return;
+        const handleOutsideClick = (event: MouseEvent) => {
+            if (popupRef.current && !popupRef.current.contains(event.target as Node)) {
+                closeAnnotationPopup();
+            }
+        };
+        document.addEventListener('mousedown', handleOutsideClick);
+        return () => document.removeEventListener('mousedown', handleOutsideClick);
+    }, [activeAnnotationId, closeAnnotationPopup]);
 
     const annotationsPlugin = useMemo(() => {
         const HighlightLayer: React.FC<{ pageIndex: number }> = ({ pageIndex }) => {
             if (!currentPdf) return null;
-            const pageAnnotations = currentPdf.annotations.filter(a => a.pageIndex === pageIndex);
+            const pageAnnotations = currentPdf.annotations.filter((a) => a.pageIndex === pageIndex);
             if (!pageAnnotations.length) return null;
 
             return (
@@ -166,13 +232,20 @@ export function PdfViewPage() {
                         left: 0,
                         width: '100%',
                         height: '100%',
-                        pointerEvents: 'none',
+                        pointerEvents: annotationMode === 'none' ? 'auto' : 'none',
+                        zIndex: 5,
                     }}
                 >
-                    {pageAnnotations.flatMap(annotation =>
-                        annotation.rects.map((rect, idx) => (
-                            <div
+                    {pageAnnotations.flatMap((annotation) => {
+                        const highlightElements = annotation.rects.map((rect, idx) => (
+                            <button
                                 key={`${annotation.id}-${idx}`}
+                                type="button"
+                                onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    openAnnotationPopup(annotation.id, event.currentTarget.getBoundingClientRect());
+                                }}
                                 style={{
                                     position: 'absolute',
                                     left: `${rect.x}%`,
@@ -183,14 +256,53 @@ export function PdfViewPage() {
                                         annotation.type === 'highlight'
                                             ? 'rgba(255, 255, 0, 0.35)'
                                             : 'transparent',
+                                    border: 'none',
                                     borderBottom:
                                         annotation.type === 'underline'
                                             ? '2px solid rgba(255, 0, 0, 0.7)'
                                             : 'none',
+                                    padding: 0,
+                                    cursor: 'pointer',
+                                    pointerEvents: 'auto',
                                 }}
                             />
-                        ))
-                    )}
+                        ));
+
+                        if (annotation.note && annotation.rects.length > 0) {
+                            const noteRect = annotation.rects[0];
+                            highlightElements.push(
+                                <button
+                                    key={`${annotation.id}-note-indicator`}
+                                    type="button"
+                                    onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        openAnnotationPopup(annotation.id, event.currentTarget.getBoundingClientRect());
+                                    }}
+                                    style={{
+                                        position: 'absolute',
+                                        left: `calc(${noteRect.x}% + 4px)`,
+                                        top: `calc(${noteRect.y}% - 20px)`,
+                                        backgroundColor: '#fff8dc',
+                                        border: '1px solid rgba(0,0,0,0.2)',
+                                        borderRadius: 4,
+                                        padding: 2,
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        pointerEvents: 'auto',
+                                        boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
+                                    }}
+                                    title="View note"
+                                >
+                                    <StickyNote2 fontSize="small" htmlColor="#b98900" />
+                                </button>
+                            );
+                        }
+
+                        return highlightElements;
+                    })}
                 </div>
             );
         };
@@ -200,7 +312,7 @@ export function PdfViewPage() {
                 <HighlightLayer key={`annotation-layer-${pageIndex}`} pageIndex={pageIndex} />
             ),
         };
-    }, [currentPdf]);
+    }, [annotationMode, currentPdf, openAnnotationPopup]);
 
     // --- 키보드 단축키 ---
     useEffect(() => {
@@ -275,6 +387,42 @@ export function PdfViewPage() {
                     </Box>
                 )}
             </Box>
+            {activeAnnotationId && popupPosition && (
+                <Box
+                    ref={popupRef}
+                    component={Paper}
+                    elevation={3}
+                    sx={{
+                        position: 'fixed',
+                        top: popupPosition.y,
+                        left: popupPosition.x,
+                        transform: 'translate(-50%, 0)',
+                        zIndex: 1500,
+                        p: 2,
+                        minWidth: 240,
+                    }}
+                >
+                    <Stack spacing={1.5}>
+                        <Typography variant="subtitle2">Annotation Note</Typography>
+                        <TextField
+                            multiline
+                            minRows={3}
+                            size="small"
+                            value={noteDraft}
+                            onChange={(event) => setNoteDraft(event.target.value)}
+                            placeholder="Add a note..."
+                        />
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Button variant="outlined" color="error" onClick={handleDeleteAnnotation}>
+                                Delete
+                            </Button>
+                            <Button variant="contained" onClick={handleSaveNote}>
+                                Save
+                            </Button>
+                        </Stack>
+                    </Stack>
+                </Box>
+            )}
         </Box>
     );
 }
