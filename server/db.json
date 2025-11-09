@@ -1,15 +1,26 @@
 {
   "pdfs": [
     {
-      "id": "99fd5b9f-94b1-4ed3-b429-0c7e96dcfb54",
+      "id": "9dc4bd83-f333-4aec-b393-d1f7d24949ed",
+      "originalName": "2505.07329v1.pdf",
+      "filename": "file-1762562569972-446945105.pdf",
+      "path": "/files/file-1762562569972-446945105.pdf",
+      "title": "2505.07329v1",
+      "author": "",
+      "journal": "",
+      "annotations": [],
+      "createdAt": "2025-11-08T00:42:49.978Z"
+    },
+    {
+      "id": "3dd8c9c2-5f7c-4efb-acfc-419d14f162f7",
       "originalName": "ð - [Draft]Generalized Trace (1).pdf",
-      "filename": "file-1762561787619-345881251.pdf",
-      "path": "/files/file-1762561787619-345881251.pdf",
+      "filename": "file-1762723076613-604986595.pdf",
+      "path": "/files/file-1762723076613-604986595.pdf",
       "title": "ð - [Draft]Generalized Trace (1)",
       "author": "",
       "journal": "",
       "annotations": [],
-      "createdAt": "2025-11-08T00:29:47.627Z"
+      "createdAt": "2025-11-09T21:17:56.620Z"
     }
   ]
 }
