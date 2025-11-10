@@ -79,6 +79,10 @@ export function PdfViewPage() {
         () => (currentPdf ? `${SCROLL_STORAGE_PREFIX}:${currentPdf.id}` : null),
         [currentPdf?.id],
     );
+    const activeAnnotation = useMemo(
+        () => currentPdf?.annotations.find((annotation) => annotation.id === activeAnnotationId),
+        [activeAnnotationId, currentPdf],
+    );
 
     const pushHistorySnapshot = useCallback((annotations: Annotation[]) => {
         const snapshot = cloneAnnotations(annotations);
@@ -274,6 +278,20 @@ export function PdfViewPage() {
         });
         closeAnnotationPopup();
     }, [activeAnnotationId, closeAnnotationPopup, currentPdf, pushHistorySnapshot]);
+
+    const handleClearNote = useCallback(() => {
+        if (!currentPdf || !activeAnnotationId) return;
+        const targetAnnotation = currentPdf.annotations.find((annotation) => annotation.id === activeAnnotationId);
+        if (!targetAnnotation || !targetAnnotation.note) return;
+        pushHistorySnapshot(currentPdf.annotations);
+        setCurrentPdf({
+            ...currentPdf,
+            annotations: currentPdf.annotations.map((annotation) =>
+                annotation.id === activeAnnotationId ? { ...annotation, note: undefined } : annotation
+            ),
+        });
+        setNoteDraft('');
+    }, [activeAnnotationId, currentPdf, pushHistorySnapshot]);
 
     useEffect(() => {
         if (!activeAnnotationId) return;
@@ -615,6 +633,11 @@ export function PdfViewPage() {
                             onKeyDown={handleNoteKeyDown}
                         />
                         <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            {activeAnnotation?.note && (
+                                <Button variant="outlined" color="warning" onClick={handleClearNote}>
+                                    Delete Note
+                                </Button>
+                            )}
                             <Button variant="outlined" color="error" onClick={handleDeleteAnnotation}>
                                 Delete
                             </Button>
