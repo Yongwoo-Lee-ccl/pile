@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Viewer, Worker, SpecialZoomLevel } from '@react-pdf-viewer/core';
 // Plugins
 import { SelectionMode, selectionModePlugin } from '@react-pdf-viewer/selection-mode';
+import { zoomPlugin } from '@react-pdf-viewer/zoom';
 
 import {
     AppBar,
@@ -22,12 +23,14 @@ import {
     TextField,
     Stack,
     List,
+    ListItem,
     ListItemButton,
     ListItemIcon,
     ListItemText,
     Divider,
+    InputAdornment,
 } from '@mui/material';
-import { ArrowBack, Save, BorderColor, FormatUnderlined, StickyNote2, Undo, Mouse as MouseIcon } from '@mui/icons-material';
+import { ArrowBack, Save, BorderColor, FormatUnderlined, StickyNote2, Undo, Mouse as MouseIcon, Delete as DeleteIcon, ZoomIn, ZoomOut } from '@mui/icons-material';
 
 const API_URL = 'http://localhost:3001';
 const SCROLL_STORAGE_PREFIX = 'pdf-scroll-position';
@@ -53,6 +56,11 @@ interface PDF {
 type AnnotationMode = 'highlight' | 'underline' | 'cursor';
 
 const HISTORY_LIMIT = 50;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 2;
+const ZOOM_STEP = 0.1;
+const clampZoomValue = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+const getZoomStorageKey = (pdfId: string | undefined) => (pdfId ? `${SCROLL_STORAGE_PREFIX}:zoom:${pdfId}` : null);
 
 const cloneAnnotations = (annotations: Annotation[]): Annotation[] =>
     annotations.map((annotation) => ({
@@ -68,6 +76,7 @@ export function PdfViewPage() {
     const [annotationMode, setAnnotationMode] = useState<AnnotationMode>('cursor');
     const [message, setMessage] = useState('');
     const textSelectionHandlerRef = useRef<(() => void) | null>(null);
+    const zoomInputRef = useRef<HTMLInputElement | null>(null);
     const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
     const [noteDraft, setNoteDraft] = useState('');
     const [popupPosition, setPopupPosition] = useState<{ x: number; y: number } | null>(null);
@@ -109,22 +118,6 @@ export function PdfViewPage() {
     }, []);
 
     // --- 데이터 로딩 ---
-    useEffect(() => {
-        const fetchPdfData = async () => {
-            try {
-                const response = await axios.get<PDF>(`${API_URL}/api/pdfs/${id}`);
-                skipNextAutoSaveRef.current = true;
-                setCurrentPdf(response.data);
-                historyRef.current = [];
-                setCanUndo(false);
-            } catch (error) {
-                console.error('PDF 정보를 불러오는 데 실패했습니다.', error);
-                navigate('/');
-            }
-        };
-        fetchPdfData();
-    }, [id, navigate]);
-
     // --- 주석 저장 ---
     const saveAnnotations = useCallback(async (options?: { auto?: boolean }) => {
         if (!currentPdf) return;
@@ -148,6 +141,41 @@ export function PdfViewPage() {
         selectionMode: SelectionMode.Text,
     });
     const { SwitchSelectionMode } = selectionModePluginInstance;
+    const zoomPluginInstance = zoomPlugin();
+    const [zoom, setZoomState] = useState(1);
+    const [zoomInput, setZoomInput] = useState('100');
+    const zoomStorageKey = useMemo(() => getZoomStorageKey(currentPdf?.id), [currentPdf?.id]);
+
+    useEffect(() => {
+        const fetchPdfData = async () => {
+            try {
+                const response = await axios.get<PDF>(`${API_URL}/api/pdfs/${id}`);
+                const normalizedPdf: PDF = {
+                    ...response.data,
+                    annotations: response.data.annotations ?? [],
+                };
+                skipNextAutoSaveRef.current = true;
+                setCurrentPdf(normalizedPdf);
+                historyRef.current = [];
+                setCanUndo(false);
+                const storedZoom = normalizedPdf.id ? localStorage.getItem(getZoomStorageKey(normalizedPdf.id) ?? '') : null;
+                if (storedZoom) {
+                    const parsedZoom = clampZoomValue(parseFloat(storedZoom));
+                    setZoomState(parsedZoom);
+                } else {
+                    setZoomState(1);
+                }
+            } catch (error) {
+                console.error('PDF 정보를 불러오는 데 실패했습니다.', error);
+                navigate('/');
+            }
+        };
+        fetchPdfData();
+    }, [id, navigate]);
+
+    useEffect(() => {
+        setZoomInput(String(Math.round(zoom * 100)));
+    }, [zoom]);
 
     // --- 텍스트 선택 감지 ---
     const persistSelection = useCallback(() => {
@@ -280,9 +308,11 @@ export function PdfViewPage() {
         }
     }, [handleSaveNote]);
 
-    const handleDeleteAnnotation = useCallback(() => {
-        if (!currentPdf || !activeAnnotationId) return;
-        const exists = currentPdf.annotations.some((annotation) => annotation.id === activeAnnotationId);
+    const handleDeleteAnnotation = useCallback((targetId?: string) => {
+        if (!currentPdf) return;
+        const idToRemove = targetId ?? activeAnnotationId;
+        if (!idToRemove) return;
+        const exists = currentPdf.annotations.some((annotation) => annotation.id === idToRemove);
         if (!exists) {
             closeAnnotationPopup();
             return;
@@ -290,7 +320,7 @@ export function PdfViewPage() {
         pushHistorySnapshot(currentPdf.annotations);
         setCurrentPdf({
             ...currentPdf,
-            annotations: currentPdf.annotations.filter((annotation) => annotation.id !== activeAnnotationId),
+            annotations: currentPdf.annotations.filter((annotation) => annotation.id !== idToRemove),
         });
         closeAnnotationPopup();
     }, [activeAnnotationId, closeAnnotationPopup, currentPdf, pushHistorySnapshot]);
@@ -308,6 +338,45 @@ export function PdfViewPage() {
         });
         setNoteDraft('');
     }, [activeAnnotationId, currentPdf, pushHistorySnapshot]);
+
+    const handleZoomChange = useCallback((value: number) => {
+        const clamped = clampZoomValue(value);
+        setZoomState(clamped);
+        if (zoomStorageKey) {
+            localStorage.setItem(zoomStorageKey, String(clamped));
+        }
+    }, [zoomStorageKey]);
+
+    const handleZoomStep = useCallback((delta: number) => {
+        if (!currentPdf) return;
+        handleZoomChange(zoom + delta);
+        zoomInputRef.current?.blur();
+    }, [currentPdf, handleZoomChange, zoom]);
+
+    const handleZoomInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+        setZoomInput(event.target.value);
+    }, []);
+
+    const commitZoomInput = useCallback(() => {
+        const numericValue = parseFloat(zoomInput);
+        if (Number.isNaN(numericValue)) {
+            setZoomInput(String(Math.round(zoom * 100)));
+            return;
+        }
+        handleZoomChange(numericValue / 100);
+    }, [handleZoomChange, zoomInput, zoom]);
+
+    const handleZoomInputBlur = useCallback(() => {
+        commitZoomInput();
+    }, [commitZoomInput]);
+
+    const handleZoomInputKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            commitZoomInput();
+            zoomInputRef.current?.blur();
+        }
+    }, [commitZoomInput]);
 
     const handleSelectAnnotationFromSidebar = useCallback((annotationId: string) => {
         if (!currentPdf || typeof document === 'undefined') return;
@@ -466,15 +535,13 @@ export function PdfViewPage() {
 
     // --- 키보드 단축키 ---
     useEffect(() => {
-        const isTypingTarget = (target: EventTarget | null): boolean => {
+        const shouldBlockShortcuts = (target: EventTarget | null): boolean => {
             if (!target || !(target instanceof HTMLElement)) return false;
-            const tag = target.tagName.toLowerCase();
-            if (tag === 'input' || tag === 'textarea') return true;
-            return target.isContentEditable;
+            return Boolean(target.closest('[data-block-shortcuts="true"]'));
         };
 
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (isTypingTarget(e.target)) return;
+            if (shouldBlockShortcuts(e.target)) return;
             const key = e.key.toLowerCase();
             if (key === 'h') setAnnotationMode('highlight');
             else if (key === 'u') setAnnotationMode('underline');
@@ -528,6 +595,10 @@ export function PdfViewPage() {
             autoSaveTimerRef.current = null;
         }, 1000);
     }, [currentPdf, saveAnnotations]);
+
+    useEffect(() => {
+        zoomPluginInstance.zoomTo(zoom);
+    }, [zoom, zoomPluginInstance]);
 
     useEffect(() => {
         if (!scrollStorageKey) return;
@@ -623,6 +694,60 @@ export function PdfViewPage() {
                         <Tooltip title="하이라이트 (h)"><Button onClick={() => setAnnotationMode('highlight')} color={annotationMode === 'highlight' ? 'secondary' : 'primary'}><BorderColor /></Button></Tooltip>
                         <Tooltip title="밑줄 (u)"><Button onClick={() => setAnnotationMode('underline')} color={annotationMode === 'underline' ? 'secondary' : 'primary'}><FormatUnderlined /></Button></Tooltip>
                     </ButtonGroup>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mr: 2 }}>
+                        <Tooltip title="Zoom out">
+                            <span>
+                                <IconButton
+                                    color="inherit"
+                                    size="small"
+                                    onClick={() => handleZoomStep(-ZOOM_STEP)}
+                                    disabled={zoom <= MIN_ZOOM}
+                                >
+                                    <ZoomOut />
+                                </IconButton>
+                            </span>
+                        </Tooltip>
+                        <TextField
+                            value={zoomInput}
+                            onChange={handleZoomInputChange}
+                            onBlur={handleZoomInputBlur}
+                            onKeyDown={handleZoomInputKeyDown}
+                            size="small"
+                            variant="outlined"
+                            sx={{ width: 90 }}
+                            inputRef={zoomInputRef}
+                            inputProps={{ 'data-block-shortcuts': 'true' }}
+                            InputLabelProps={{
+                                sx: {
+                                    color: 'rgba(255,255,255,0.7)',
+                                    '&.Mui-focused': { color: '#fff' },
+                                },
+                            }}
+                            InputProps={{
+                                endAdornment: <InputAdornment position="end">%</InputAdornment>,
+                                sx: {
+                                    color: '#fff',
+                                    '& .MuiOutlinedInput-input': { textAlign: 'right' },
+                                    '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.6)' },
+                                    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#fff' },
+                                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#fff' },
+                                },
+                            }}
+                            label="Zoom"
+                        />
+                        <Tooltip title="Zoom in">
+                            <span>
+                                <IconButton
+                                    color="inherit"
+                                    size="small"
+                                    onClick={() => handleZoomStep(ZOOM_STEP)}
+                                    disabled={zoom >= MAX_ZOOM}
+                                >
+                                    <ZoomIn />
+                                </IconButton>
+                            </span>
+                        </Tooltip>
+                    </Box>
                     <Tooltip title="Undo (Cmd/Ctrl + Z)">
                         <span>
                             <Button
@@ -675,31 +800,42 @@ export function PdfViewPage() {
                                     const secondaryText = secondaryTextParts.join(' • ');
                                     return (
                                         <React.Fragment key={annotation.id}>
-                                            <ListItemButton
-                                                alignItems="flex-start"
-                                                selected={annotation.id === activeAnnotationId}
-                                                onClick={() => handleSelectAnnotationFromSidebar(annotation.id)}
+                                            <ListItem
+                                                disablePadding
+                                                secondaryAction={
+                                                    <Tooltip title="Delete annotation">
+                                                        <IconButton edge="end" color="error" onClick={() => handleDeleteAnnotation(annotation.id)}>
+                                                            <DeleteIcon fontSize="small" />
+                                                        </IconButton>
+                                                    </Tooltip>
+                                                }
                                             >
-                                                <ListItemIcon sx={{ minWidth: 36 }}>
-                                                    {annotation.type === 'highlight' ? (
-                                                        <BorderColor fontSize="small" />
-                                                    ) : (
-                                                        <FormatUnderlined fontSize="small" />
-                                                    )}
-                                                </ListItemIcon>
-                                                <ListItemText
-                                                    primary={
-                                                        <Typography variant="body2" sx={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' }}>
-                                                            {primaryText}
-                                                        </Typography>
-                                                    }
-                                                    secondary={
-                                                        <Typography variant="caption" color="text.secondary">
-                                                            {secondaryText}
-                                                        </Typography>
-                                                    }
-                                                />
-                                            </ListItemButton>
+                                                <ListItemButton
+                                                    alignItems="flex-start"
+                                                    selected={annotation.id === activeAnnotationId}
+                                                    onClick={() => handleSelectAnnotationFromSidebar(annotation.id)}
+                                                >
+                                                    <ListItemIcon sx={{ minWidth: 36 }}>
+                                                        {annotation.type === 'highlight' ? (
+                                                            <BorderColor fontSize="small" />
+                                                        ) : (
+                                                            <FormatUnderlined fontSize="small" />
+                                                        )}
+                                                    </ListItemIcon>
+                                                    <ListItemText
+                                                        primary={
+                                                            <Typography variant="body2" sx={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' }}>
+                                                                {primaryText}
+                                                            </Typography>
+                                                        }
+                                                        secondary={
+                                                            <Typography variant="caption" color="text.secondary">
+                                                                {secondaryText}
+                                                            </Typography>
+                                                        }
+                                                    />
+                                                </ListItemButton>
+                                            </ListItem>
                                             {index < annotations.length - 1 && <Divider component="li" />}
                                         </React.Fragment>
                                     );
@@ -720,8 +856,8 @@ export function PdfViewPage() {
                             <>
                                 <Viewer
                                     fileUrl={`${API_URL}${currentPdf.path}`}
-                                    plugins={[selectionModePluginInstance, annotationsPlugin]}
-                                    defaultScale={SpecialZoomLevel.PageWidth}
+                                    plugins={[selectionModePluginInstance, annotationsPlugin, zoomPluginInstance]}
+                                    defaultScale={zoom}
                                 />
                                 <SwitchSelectionMode mode={SelectionMode.Text}>
                                     {({ onClick }) => {
@@ -764,16 +900,21 @@ export function PdfViewPage() {
                             placeholder="Add a note..."
                             inputRef={noteInputRef}
                             onKeyDown={handleNoteKeyDown}
+                            inputProps={{ 'data-block-shortcuts': 'true' }}
                         />
                         <Stack direction="row" spacing={1} justifyContent="flex-end">
                             {activeAnnotation?.note && (
-                                <Button variant="outlined" color="warning" onClick={handleClearNote}>
+                                <Button variant="outlined" color="warning" onClick={handleClearNote} startIcon={<DeleteIcon />}>
                                     Delete Note
                                 </Button>
                             )}
-                            <Button variant="outlined" color="error" onClick={handleDeleteAnnotation}>
-                                Delete
-                            </Button>
+                            <Tooltip title="Delete annotation">
+                                <span>
+                                <IconButton color="error" onClick={() => handleDeleteAnnotation()}>
+                                    <DeleteIcon />
+                                </IconButton>
+                                </span>
+                            </Tooltip>
                             <Button variant="contained" onClick={handleSaveNote}>
                                 Save
                             </Button>
