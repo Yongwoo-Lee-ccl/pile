@@ -21,6 +21,11 @@ import {
     Paper,
     TextField,
     Stack,
+    List,
+    ListItemButton,
+    ListItemIcon,
+    ListItemText,
+    Divider,
 } from '@mui/material';
 import { ArrowBack, Save, BorderColor, FormatUnderlined, StickyNote2, Undo, Mouse as MouseIcon } from '@mui/icons-material';
 
@@ -37,6 +42,7 @@ interface Annotation {
     pageIndex: number;
     rects: Rect[];
     note?: string;
+    text?: string;
 }
 interface PDF {
     id:string;
@@ -79,6 +85,15 @@ export function PdfViewPage() {
         () => (currentPdf ? `${SCROLL_STORAGE_PREFIX}:${currentPdf.id}` : null),
         [currentPdf?.id],
     );
+    const annotations = useMemo(() => {
+        if (!currentPdf) return [];
+        return [...currentPdf.annotations].sort((a, b) => {
+            if (a.pageIndex === b.pageIndex) {
+                return (a.rects[0]?.y ?? 0) - (b.rects[0]?.y ?? 0);
+            }
+            return a.pageIndex - b.pageIndex;
+        });
+    }, [currentPdf]);
     const activeAnnotation = useMemo(
         () => currentPdf?.annotations.find((annotation) => annotation.id === activeAnnotationId),
         [activeAnnotationId, currentPdf],
@@ -197,6 +212,7 @@ export function PdfViewPage() {
             type: annotationMode,
             pageIndex: parseInt(pageIndex, 10),
             rects,
+            text,
         }));
 
         if (newAnnotations.length === 0) return;
@@ -293,6 +309,47 @@ export function PdfViewPage() {
         setNoteDraft('');
     }, [activeAnnotationId, currentPdf, pushHistorySnapshot]);
 
+    const handleSelectAnnotationFromSidebar = useCallback((annotationId: string) => {
+        if (!currentPdf || typeof document === 'undefined') return;
+
+        const targetAnnotation = currentPdf.annotations.find((annotation) => annotation.id === annotationId);
+        if (!targetAnnotation) return;
+
+        const queryAnnotationElement = () =>
+            document.querySelector<HTMLElement>(`[data-annotation-id="${annotationId}"]`);
+
+        const revealAnnotation = (attempt = 0) => {
+            const element = queryAnnotationElement();
+            if (element) {
+                element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                openAnnotationPopup(annotationId, element.getBoundingClientRect());
+                return;
+            }
+            if (attempt < 10) {
+                window.requestAnimationFrame(() => revealAnnotation(attempt + 1));
+            } else {
+                const fallbackLayer = document.querySelector<HTMLElement>(`div[data-testid="core__page-layer-${targetAnnotation.pageIndex}"]`);
+                if (fallbackLayer) {
+                    fallbackLayer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    openAnnotationPopup(annotationId, fallbackLayer.getBoundingClientRect());
+                }
+            }
+        };
+
+        const existingElement = queryAnnotationElement();
+        if (existingElement) {
+            existingElement.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            openAnnotationPopup(annotationId, existingElement.getBoundingClientRect());
+            return;
+        }
+
+        const pageLayer = document.querySelector<HTMLElement>(`div[data-testid="core__page-layer-${targetAnnotation.pageIndex}"]`);
+        if (pageLayer) {
+            pageLayer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        revealAnnotation();
+    }, [currentPdf, openAnnotationPopup]);
+
     useEffect(() => {
         if (!activeAnnotationId) return;
         const handleOutsideClick = (event: MouseEvent) => {
@@ -330,6 +387,7 @@ export function PdfViewPage() {
                             <button
                                 key={`${annotation.id}-${idx}`}
                                 type="button"
+                                data-annotation-id={annotation.id}
                                 onClick={(event) => {
                                     event.preventDefault();
                                     event.stopPropagation();
@@ -364,6 +422,7 @@ export function PdfViewPage() {
                                 <button
                                     key={`${annotation.id}-note-indicator`}
                                     type="button"
+                                    data-annotation-id={annotation.id}
                                     onClick={(event) => {
                                         event.preventDefault();
                                         event.stopPropagation();
@@ -582,28 +641,102 @@ export function PdfViewPage() {
                     {message && <Typography sx={{ ml: 2, color: 'yellow' }}>{message}</Typography>}
                 </Toolbar>
             </AppBar>
-            <Box sx={{ flex: 1, overflow: 'hidden' }}>
-                {currentPdf ? (
-                    <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.0.279/build/pdf.worker.min.js">
-                        <>
-                            <Viewer
-                                fileUrl={`${API_URL}${currentPdf.path}`}
-                                plugins={[selectionModePluginInstance, annotationsPlugin]}
-                                defaultScale={SpecialZoomLevel.PageWidth}
-                            />
-                            <SwitchSelectionMode mode={SelectionMode.Text}>
-                                {({ onClick }) => {
-                                    textSelectionHandlerRef.current = onClick;
-                                    return null;
-                                }}
-                            </SwitchSelectionMode>
-                        </>
-                    </Worker>
-                ) : (
-                    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-                        <Typography>Loading document...</Typography>
+            <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+                <Box
+                    component={Paper}
+                    elevation={0}
+                    sx={{
+                        width: 320,
+                        borderRight: (theme) => `1px solid ${theme.palette.divider}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                    }}
+                >
+                    <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+                        <Typography variant="subtitle1">Annotations</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                            {annotations.length ? `${annotations.length} item${annotations.length > 1 ? 's' : ''}` : 'No annotations yet'}
+                        </Typography>
                     </Box>
-                )}
+                    <Box sx={{ flex: 1, overflowY: 'auto' }}>
+                        {annotations.length ? (
+                            <List disablePadding>
+                                {annotations.map((annotation, index) => {
+                                    const noteText = annotation.note?.trim();
+                                    const snippetText = annotation.text?.trim();
+                                    const primaryText =
+                                        noteText ||
+                                        snippetText ||
+                                        `${annotation.type === 'highlight' ? 'Highlight' : 'Underline'} on page ${annotation.pageIndex + 1}`;
+                                    const secondaryTextParts = [`Page ${annotation.pageIndex + 1}`];
+                                    if (noteText) secondaryTextParts.push('Note');
+                                    if (!noteText && snippetText) secondaryTextParts.push(annotation.type === 'highlight' ? 'Highlight' : 'Underline');
+                                    const secondaryText = secondaryTextParts.join(' • ');
+                                    return (
+                                        <React.Fragment key={annotation.id}>
+                                            <ListItemButton
+                                                alignItems="flex-start"
+                                                selected={annotation.id === activeAnnotationId}
+                                                onClick={() => handleSelectAnnotationFromSidebar(annotation.id)}
+                                            >
+                                                <ListItemIcon sx={{ minWidth: 36 }}>
+                                                    {annotation.type === 'highlight' ? (
+                                                        <BorderColor fontSize="small" />
+                                                    ) : (
+                                                        <FormatUnderlined fontSize="small" />
+                                                    )}
+                                                </ListItemIcon>
+                                                <ListItemText
+                                                    primary={
+                                                        <Typography variant="body2" sx={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' }}>
+                                                            {primaryText}
+                                                        </Typography>
+                                                    }
+                                                    secondary={
+                                                        <Typography variant="caption" color="text.secondary">
+                                                            {secondaryText}
+                                                        </Typography>
+                                                    }
+                                                />
+                                            </ListItemButton>
+                                            {index < annotations.length - 1 && <Divider component="li" />}
+                                        </React.Fragment>
+                                    );
+                                })}
+                            </List>
+                        ) : (
+                            <Box sx={{ p: 2 }}>
+                                <Typography variant="body2" color="text.secondary">
+                                    No highlights yet. Select text to start annotating.
+                                </Typography>
+                            </Box>
+                        )}
+                    </Box>
+                </Box>
+                <Box sx={{ flex: 1, overflow: 'hidden' }}>
+                    {currentPdf ? (
+                        <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.0.279/build/pdf.worker.min.js">
+                            <>
+                                <Viewer
+                                    fileUrl={`${API_URL}${currentPdf.path}`}
+                                    plugins={[selectionModePluginInstance, annotationsPlugin]}
+                                    defaultScale={SpecialZoomLevel.PageWidth}
+                                />
+                                <SwitchSelectionMode mode={SelectionMode.Text}>
+                                    {({ onClick }) => {
+                                        textSelectionHandlerRef.current = onClick;
+                                        return null;
+                                    }}
+                                </SwitchSelectionMode>
+                            </>
+                        </Worker>
+                    ) : (
+                        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                            <Typography>Loading document...</Typography>
+                        </Box>
+                    )}
+                </Box>
             </Box>
             {activeAnnotationId && popupPosition && (
                 <Box
